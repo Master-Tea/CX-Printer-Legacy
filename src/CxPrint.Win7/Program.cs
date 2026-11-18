@@ -11,6 +11,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         _selfTest = args.Contains("--self-test", StringComparer.OrdinalIgnoreCase);
+        var diagnoseService = args.Contains("--diagnose-service", StringComparer.OrdinalIgnoreCase);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => ReportError(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -19,6 +20,15 @@ internal static class Program
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            if (diagnoseService) return ServiceDiagnostic.Run();
+            if (!_selfTest && ClientEnvironment.StartupProblem() is { } restriction)
+            {
+                var context = System.Text.Json.JsonSerializer.Serialize(ClientEnvironment.Describe(), CxPrint.Core.Product.Json);
+                var log = ClientLog.Append("setup-ui.log", $"{DateTimeOffset.Now:O} {restriction}{Environment.NewLine}{context}{Environment.NewLine}");
+                MessageBox.Show(restriction + (log is null ? "" : Environment.NewLine + Environment.NewLine + "诊断日志：" + log),
+                    "运行权限受限制", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return 2;
+            }
             if (args.Contains("--diagnose-printers", StringComparer.OrdinalIgnoreCase))
             {
                 var scanner = CxPrint.Windows.PrinterProbe.CreateScanner(Path.Combine(AppContext.BaseDirectory, "Bridge", "CxPrint.Service.exe"));
@@ -49,6 +59,11 @@ internal static class Program
         }
         catch (Exception ex)
         {
+            if (diagnoseService)
+            {
+                ClientLog.Append("CX-Printer-Legacy-error.log", $"{DateTimeOffset.Now:O} {ex}{Environment.NewLine}");
+                return 1;
+            }
             ReportError(ex);
             return 1;
         }

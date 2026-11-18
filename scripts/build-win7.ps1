@@ -45,6 +45,11 @@ $licenseDestination=Join-Path $out 'Licenses'
 if (Test-Path -LiteralPath $licenseDestination) { Remove-Item -LiteralPath $licenseDestination -Recurse -Force }
 New-Item -ItemType Directory -Path $licenseDestination -Force | Out-Null
 Copy-Item (Join-Path $licenseSource '*') $licenseDestination -Recurse -Force
+$diagnostics=@(Get-ChildItem -LiteralPath $out -Recurse -File | Where-Object {
+    $_.Name -in @('setup-ui.log','CX-Printer-Legacy-error.log','service-diagnostics.json','printer-diagnostics.json') -or
+    $_.FullName -match '[\\/]DebugData[\\/]'
+})
+if ($diagnostics.Count) { throw 'Diagnostic files are present in the publish directory. Move them outside the package before building a release.' }
 $zip=Join-Path (Split-Path $out -Parent) 'CX-Printer-Legacy-win7-x64.zip'
 Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -Force
 Write-Output "Published Windows 7 x64 package: $out"

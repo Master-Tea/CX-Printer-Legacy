@@ -30,6 +30,8 @@ internal sealed class MainForm : Form
     internal string StatusText => _statusText.Text;
     internal bool ServiceButtonEnabled => _service.Enabled;
     internal int PrinterCount => _printers.Items.Count;
+    internal BridgeStatus? ConnectedService => _bridge;
+    internal string? ConnectionDiagnostic { get; private set; }
     private readonly ListView _printers = new();
     private readonly ComboBox _media = new();
     private readonly TextBox _displayName = new();
@@ -46,7 +48,7 @@ internal sealed class MainForm : Form
         _scanner = scanner ?? PrinterProbe.CreateScanner(Path.Combine(Application.StartupPath, "Bridge", "CxPrint.Service.exe"));
         _send = send ?? ControlClient.SendAsync;
         _statusTimeout = statusTimeout ?? TimeSpan.FromSeconds(4);
-        Text = "CX Printer Legacy";
+        Text = "CX Printer Legacy " + typeof(MainForm).Assembly.GetName().Version?.ToString(3);
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         MinimumSize = new Size(720, 470);
         StartPosition = FormStartPosition.CenterScreen;
@@ -152,11 +154,14 @@ internal sealed class MainForm : Form
                 var reply = await _send(new ControlRequest("status"), timeout.Token).WaitAsync(_statusTimeout);
                 _bridge = reply.Success ? reply.Status : null;
                 _connectionError = reply.Success ? null : reply.Error;
+                ConnectionDiagnostic = reply.Success ? null : reply.Error;
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 _bridge = null;
-                _connectionError = ex is TimeoutException or OperationCanceledException ? "连接超时" : ex.Message;
+                ConnectionDiagnostic = ex.ToString();
+                _connectionError = ex is TimeoutException or OperationCanceledException ? "连接超时" :
+                    ex is UnauthorizedAccessException ? "Windows 拒绝了当前管理端的访问权限；可运行 --diagnose-service 查看详情。" : ex.Message;
             }
             if (IsDisposed) return;
             _useLocalScan = _bridge is null || (_bridge.PrintersRefreshing && _bridge.Printers.Count == 0);
@@ -333,6 +338,12 @@ internal sealed class MainForm : Form
 
     private async Task InstallServiceAsync()
     {
+        if (ClientEnvironment.StartupProblem() is { } restriction)
+        {
+            MessageBox.Show(this, restriction, "运行权限受限制", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        var installerCompleted = false;
         if (_installerProcess is { HasExited: false })
         {
             MessageBox.Show(this, "上一次安装仍在运行，请等待它结束后再试。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -380,8 +391,10 @@ internal sealed class MainForm : Form
                 if (_installerProcess.ExitCode != 0)
                     throw new InvalidOperationException(listener.Latest is { Failed: true } failure
                         ? failure.Message : $"后台安装器退出代码 {_installerProcess.ExitCode}。最后进度：{listener.Latest?.Message ?? "未收到安装进度"}");
+                installerCompleted = true;
                 await RefreshPrintersAsync();
-                if (_bridge is null) throw new InvalidOperationException("安装器已结束，但管理端仍未连接服务：" + _connectionError);
+                if (_bridge is null) throw new InvalidOperationException("后台服务安装已完成，但管理端连接未通过：" + _connectionError +
+                    Environment.NewLine + ConnectionDiagnostic);
                 _statusText.Text = "后台服务已安装并通过控制连接检查。";
             }
             catch (TimeoutException)
@@ -400,25 +413,17 @@ internal sealed class MainForm : Form
             var log = WriteSetupTrace(ex.ToString());
             if (!IsDisposed)
             {
-                _statusText.Text = "后台服务安装失败，详情已记录。";
-                MessageBox.Show(this, ex.Message + Environment.NewLine + Environment.NewLine + "诊断日志：" + log,
-                    "后台服务安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _statusText.Text = installerCompleted ? "服务已安装，但管理端连接未通过。" : "后台服务安装失败。";
+                MessageBox.Show(this, ex.Message + Environment.NewLine + Environment.NewLine +
+                    (log is null ? "所有日志目录均不可写，请保留此错误内容。" : "诊断日志：" + log),
+                    installerCompleted ? "管理端连接未通过" : "后台服务安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         finally { _installing = false; if (!IsDisposed) SetBusy(false); }
     }
 
-    private static string WriteSetupTrace(string message)
-    {
-        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CX Printer Legacy", "Logs", "setup-ui.log");
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.AppendAllText(path, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
-            return path;
-        }
-        catch { return "无法写入安装日志。"; }
-    }
+    private static string? WriteSetupTrace(string message) =>
+        ClientLog.Append("setup-ui.log", $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
 
     private void SetBusy(bool busy)
     {
