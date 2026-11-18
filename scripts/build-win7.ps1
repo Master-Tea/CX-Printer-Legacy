@@ -20,6 +20,23 @@ function Publish([string]$project,[string]$destination) {
 
 Publish (Join-Path $repo 'src\CxPrint.Service\CxPrint.Service.csproj') $bridge
 Publish (Join-Path $repo 'src\CxPrint.Win7\CxPrint.Win7.csproj') $out
+
+# Exercise the actual published WinForms entry point before producing a distributable archive.
+$testInfo=New-Object System.Diagnostics.ProcessStartInfo
+$testInfo.FileName=Join-Path $out 'CX Printer.exe'
+$testInfo.Arguments='--self-test'
+$testInfo.UseShellExecute=$false
+$testProcess=[System.Diagnostics.Process]::Start($testInfo)
+if (!$testProcess.WaitForExit(30000)) {
+    $testProcess.Kill()
+    throw 'Published UI startup self-test timed out.'
+}
+if ($testProcess.ExitCode -ne 0) { throw 'Published UI startup self-test failed. See CX-Printer-Legacy-error.log in the publish directory.' }
+$testReport=Join-Path $out 'startup-self-test.txt'
+if (!(Test-Path -LiteralPath $testReport)) { throw 'Published UI startup self-test report is missing.' }
+Write-Output (Get-Content -LiteralPath $testReport -Raw -Encoding UTF8)
+Remove-Item -LiteralPath $testReport -Force
+
 Copy-Item (Join-Path $repo 'README.md') $out -Force
 Copy-Item (Join-Path $repo 'THIRD_PARTY_NOTICES.md') $out -Force
 $licenseSource=Join-Path $repo 'third_party\licenses'

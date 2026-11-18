@@ -31,6 +31,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-win7.ps1
 
 安装完成后，Windows 服务会在后台持续运行。默认端口为 TCP 8631，mDNS 使用 UDP 5353；安装服务时会创建限于专用/域网络和本地子网的 Windows 防火墙规则。不要在不可信网络共享打印服务。
 
+## 启动故障排查
+
+v1.0.1 修复了窗口分栏初始化时发生的启动异常。请完整解压新版到新目录后运行，不要只复制 EXE。
+
+程序发生托管异常时会显示错误消息，并优先在程序目录写入 `CX-Printer-Legacy-error.log`。如果目录不可写，日志会依次尝试写入 `%LOCALAPPDATA%\CX Printer Legacy\Logs` 或临时目录。请提供该日志中的完整异常信息以便定位。运行 `"CX Printer.exe" --self-test` 可检查窗口构造和缩放尺寸布局，成功时退出代码为 0；它不安装服务或修改共享设置。
+
+打包脚本在生成 ZIP 前会运行已发布程序的界面启动自检。这不替代 Windows 7 实机及实际打印测试。
+
 ## 版本说明
 
 此独立仓库复用 CX Printer 的 IPP、DNS-SD、打印队列与配置逻辑；Windows 7 入口及 UI 位于 `src/CxPrint.Win7`。项目目标为 `net6.0-windows7.0`，发布仅支持 x64。PDF 页面使用 PDFium 108 渲染，以兼容 Windows 7。

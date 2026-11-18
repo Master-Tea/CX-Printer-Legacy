@@ -90,7 +90,15 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 18, 0, 0)
         }, 0, 4);
 
-        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 560, Panel1MinSize = 340, Panel2MinSize = 250 };
+        // Size the container before applying panel minima: its default width is only 150 pixels.
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Size = ClientSize,
+            Panel1MinSize = 340,
+            Panel2MinSize = 250,
+            SplitterDistance = 560
+        };
         split.Panel1.Controls.Add(_printers);
         split.Panel2.Controls.Add(editor);
 
