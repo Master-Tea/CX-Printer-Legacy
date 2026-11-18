@@ -2,6 +2,9 @@
 
 Windows 7 SP1 x64 兼容版。它把 Windows 已安装的打印机驱动通过 IPP 和 DNS-SD 发布到同一局域网，供 iPhone、iPad 和 Mac 发现并打印。
 
+<img width="1440" height="860" alt="image" src="https://github.com/user-attachments/assets/4cd2acce-3f21-4f23-9c3b-e74eb61715e5" />
+
+
 ## 基础功能
 
 - 查看 Windows 打印机并选择要共享的队列。
