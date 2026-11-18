@@ -126,7 +126,9 @@ internal sealed class MainForm : Form
         split.Panel1.Controls.Add(_printers);
         split.Panel2.Controls.Add(editor);
 
-        var strip = new StatusStrip();
+        var strip = new StatusStrip { ShowItemToolTips = true };
+        _statusText.Spring = true;
+        _statusText.TextAlign = ContentAlignment.MiddleLeft;
         strip.Items.Add(_statusText);
         Controls.Add(split);
         Controls.Add(actions);
@@ -197,6 +199,7 @@ internal sealed class MainForm : Form
             : $"后台服务运行中 · IPP 端口 {_bridge.Port}。";
         var scanMessage = _useLocalScan ? _scanner.Snapshot.Message : _bridge?.PrinterScanStatus;
         _statusText.Text = connection + " " + (scanMessage ?? $"已读取 {_printers.Items.Count} 台打印机。");
+        _statusText.ToolTipText = _statusText.Text;
     }
 
     protected override void Dispose(bool disposing)
