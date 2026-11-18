@@ -9,22 +9,14 @@ using Makaretu.Dns;
 
 namespace CxPrint.Service;
 
-public sealed class PrinterMonitor(ILogger<PrinterMonitor> logger,PrinterScanner? scanner=null,PrinterSupplyMonitor? supplies=null) : ServiceWorker
+public sealed class PrinterMonitor(ILogger<PrinterMonitor> logger,PrinterScanner? scanner=null) : ServiceWorker
 {
     private readonly PrinterScanner _scanner=scanner ?? PrinterProbe.CreateScanner(Path.Combine(AppContext.BaseDirectory,"CxPrint.Service.exe"),onRead:(name,elapsed)=>
     {
         if (elapsed>TimeSpan.FromSeconds(5)) logger.LogWarning("打印机 {Printer} 的驱动与纸张读取耗时 {Seconds:F1} 秒。",name,elapsed.TotalSeconds);
     });
-    private readonly PrinterSupplyMonitor _supplies=supplies ?? new();
-    public PrinterScanSnapshot Snapshot
-    {
-        get
-        {
-            var snapshot=_scanner.Snapshot;
-            _supplies.RequestRefresh(snapshot.Printers);
-            return snapshot with { Printers=snapshot.Printers.Select(p=>p with { Supplies=_supplies.Get(p.Id) }).ToArray() };
-        }
-    }
+    // The legacy UI does not display supplies. Status requests must never start extra vendor-driver calls.
+    public PrinterScanSnapshot Snapshot=>_scanner.Snapshot;
     public IReadOnlyList<PrinterInfo> Printers=>Snapshot.Printers;
     public bool Refreshing=>Snapshot.Refreshing;
     public Task RefreshAsync(CancellationToken cancellation=default)=>_scanner.RefreshAsync(cancellation);

@@ -24,6 +24,7 @@ internal static class RefreshRegression
 
     private static async Task CheckAsync()
     {
+        await PipeRegression.CheckAsync();
         using var blocked = new ManualResetEventSlim();
         var scanner = new PrinterScanner(() => new[] { "Microsoft Print to PDF", "Stalled driver" }, name =>
         {

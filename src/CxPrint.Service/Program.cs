@@ -9,6 +9,9 @@ if ((args.Length == 1 && args[0] == "--list-printer-names") ||
     (args.Length == 2 && args[0] == "--read-printer"))
 {
     Console.OutputEncoding = System.Text.Encoding.UTF8;
+    // Also bound orphaned probes if the parent service is stopped or crashes mid-scan.
+    using var watchdog = new System.Threading.Timer(_ => Environment.Exit(124), null,
+        TimeSpan.FromSeconds(args.Length == 1 ? 15 : 25), Timeout.InfiniteTimeSpan);
     try
     {
         object result = args.Length == 1 ? PrinterCatalog.Names() : PrinterCatalog.Read(args[1]);
@@ -30,13 +33,13 @@ var debugMode=args.Length==1 && args[0]=="--console";
 if (args.Length>0 && !debugMode) { Console.Error.WriteLine("不支持的参数。"); return 2; }
 if (debugMode)
 {
-    Paths.UseDebugDirectory(Path.Combine(AppContext.BaseDirectory,"DebugData"));
+    Paths.UseDebugDirectory(Environment.GetEnvironmentVariable("CXPRINTER_DEBUG_ROOT") ?? Path.Combine(AppContext.BaseDirectory,"DebugData"));
     Directory.CreateDirectory(Paths.Root);
     if (!File.Exists(Paths.Settings))
         File.WriteAllText(Paths.Settings,JsonSerializer.Serialize(new BridgeSettings
         {
             OwnerSid=System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value,
-            Port=18631,AutoStart=false
+            Port=int.TryParse(Environment.GetEnvironmentVariable("CXPRINTER_DEBUG_PORT"),out var port) ? port : 18631,AutoStart=false
         },Product.Json));
 }
 

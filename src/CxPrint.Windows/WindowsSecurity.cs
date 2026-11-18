@@ -46,10 +46,12 @@ public static class WindowsSecurity
 
 public static class ControlClient
 {
-    public static async Task<ControlReply> SendAsync(ControlRequest request,CancellationToken cancellation=default)
+    public static Task<ControlReply> SendAsync(ControlRequest request,CancellationToken cancellation=default) =>
+        SendToPipeAsync(Product.PipeName+(Environment.GetEnvironmentVariable("CXPRINTER_DEBUG_SERVICE")=="1" ? ".Debug" : ""),request,cancellation);
+
+    public static async Task<ControlReply> SendToPipeAsync(string pipeName,ControlRequest request,CancellationToken cancellation=default)
     {
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation); deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        var pipeName=Product.PipeName+(Environment.GetEnvironmentVariable("CXPRINTER_DEBUG_SERVICE")=="1" ? ".Debug" : "");
         using var pipe=new NamedPipeClientStream(".",pipeName,PipeDirection.InOut,PipeOptions.Asynchronous,
             System.Security.Principal.TokenImpersonationLevel.Identification);
         await pipe.ConnectAsync(3000,deadline.Token);

@@ -41,7 +41,7 @@ internal static class Program
                 }
                 RefreshRegression.Run();
                 File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "startup-self-test.txt"),
-                    "PASS: MainForm construction, native window handle, resize layout; unavailable/silent service, blocked driver, partial PDF results." + Environment.NewLine, Encoding.UTF8);
+                    "PASS: window layout; service timeout and partial PDF results; first-instance pipe protection, async pipe I/O, setup progress; full console host startup, repeated control status, HTTP health." + Environment.NewLine, Encoding.UTF8);
                 return 0;
             }
             Application.Run(form);

@@ -24,6 +24,7 @@ internal sealed class MainForm : Form
     private bool _useLocalScan;
     private bool _refreshInProgress;
     private bool _installing;
+    private Process? _installerProcess;
     private string? _connectionError;
     private DateTimeOffset _nextStatusPoll;
     internal string StatusText => _statusText.Text;
@@ -204,7 +205,7 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _scanTimer.Dispose();
+        if (disposing) { _scanTimer.Dispose(); _installerProcess?.Dispose(); }
         base.Dispose(disposing);
     }
 
@@ -332,6 +333,13 @@ internal sealed class MainForm : Form
 
     private async Task InstallServiceAsync()
     {
+        if (_installerProcess is { HasExited: false })
+        {
+            MessageBox.Show(this, "上一次安装仍在运行，请等待它结束后再试。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        _installerProcess?.Dispose();
+        _installerProcess = null;
         var executable = Path.Combine(Application.StartupPath, "Bridge", "CxPrint.Service.exe");
         if (!File.Exists(executable))
         {
@@ -352,10 +360,36 @@ internal sealed class MainForm : Form
             start.ArgumentList.Add("--install");
             start.ArgumentList.Add("--owner");
             start.ArgumentList.Add(identity.User!.Value);
-            using var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动后台安装程序。");
-            await process.WaitForExitAsync();
-            if (process.ExitCode != 0) throw new InvalidOperationException($"后台服务安装失败，退出代码 {process.ExitCode}。");
-            await RefreshPrintersAsync();
+            using var listener = new SetupProgressListener();
+            using var listenCancellation = new CancellationTokenSource();
+            var progress = new Progress<SetupProgress>(value =>
+            {
+                var message = value.Failed ? value.Message : $"{value.Percent}% · {value.Message}";
+                if (!IsDisposed) { _statusText.Text = message; _statusText.ToolTipText = message; }
+                WriteSetupTrace(message);
+            });
+            var listening = listener.ListenAsync(progress, listenCancellation.Token);
+            start.ArgumentList.Add("--progress-pipe");
+            start.ArgumentList.Add(listener.Name);
+            _statusText.Text = "正在请求管理员授权并启动安装器…";
+            try
+            {
+                _installerProcess = Process.Start(start) ?? throw new InvalidOperationException("无法启动后台安装程序。");
+                await _installerProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(3));
+                await Task.WhenAny(listening, Task.Delay(500));
+                if (_installerProcess.ExitCode != 0)
+                    throw new InvalidOperationException(listener.Latest is { Failed: true } failure
+                        ? failure.Message : $"后台安装器退出代码 {_installerProcess.ExitCode}。最后进度：{listener.Latest?.Message ?? "未收到安装进度"}");
+                await RefreshPrintersAsync();
+                if (_bridge is null) throw new InvalidOperationException("安装器已结束，但管理端仍未连接服务：" + _connectionError);
+                _statusText.Text = "后台服务已安装并通过控制连接检查。";
+            }
+            catch (TimeoutException)
+            {
+                throw new TimeoutException("安装器在 3 分钟内未完成，可能仍在后台运行，请勿重复启动。最后进度：" +
+                    (listener.Latest?.Message ?? "等待管理员授权或安装器启动"));
+            }
+            finally { listenCancellation.Cancel(); await listening; }
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
@@ -363,9 +397,27 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            MessageBox.Show(this, ex.Message, "后台服务安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            var log = WriteSetupTrace(ex.ToString());
+            if (!IsDisposed)
+            {
+                _statusText.Text = "后台服务安装失败，详情已记录。";
+                MessageBox.Show(this, ex.Message + Environment.NewLine + Environment.NewLine + "诊断日志：" + log,
+                    "后台服务安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
-        finally { _installing = false; SetBusy(false); }
+        finally { _installing = false; if (!IsDisposed) SetBusy(false); }
+    }
+
+    private static string WriteSetupTrace(string message)
+    {
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CX Printer Legacy", "Logs", "setup-ui.log");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.AppendAllText(path, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+            return path;
+        }
+        catch { return "无法写入安装日志。"; }
     }
 
     private void SetBusy(bool busy)

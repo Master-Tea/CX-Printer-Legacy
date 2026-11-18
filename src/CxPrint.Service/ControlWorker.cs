@@ -3,6 +3,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
 using CxPrint.Core;
+using CxPrint.Windows;
 using Microsoft.Win32;
 
 namespace CxPrint.Service;
@@ -10,7 +11,6 @@ namespace CxPrint.Service;
 public sealed class ControlWorker(StateStore state,PrinterMonitor printers,JobManager jobs,DiscoveryWorker discovery,
     IppEndpoint endpoint,ILogger<ControlWorker> logger) : ServiceWorker
 {
-    private const PipeOptions FirstPipeInstance=(PipeOptions)0x00080000;
     protected override async Task RunAsync(CancellationToken stoppingToken)
     {
         var active=new List<Task>();
@@ -38,8 +38,7 @@ public sealed class ControlWorker(StateStore state,PrinterMonitor printers,JobMa
         foreach (var sid in new[]{new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null),
             new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null),new SecurityIdentifier(state.Settings.OwnerSid),WindowsIdentity.GetCurrent().User!})
             security.AddAccessRule(new PipeAccessRule(sid,PipeAccessRights.FullControl,AccessControlType.Allow));
-        return NamedPipeServerStreamAcl.Create(Paths.PipeName,PipeDirection.InOut,5,PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous|(first ? FirstPipeInstance : PipeOptions.None),65536,65536,security);
+        return LegacyPipeServer.Create(Paths.PipeName,PipeDirection.InOut,5,65536,65536,security,first);
     }
     private async Task Serve(NamedPipeServerStream pipe,CancellationToken stoppingToken)
     {

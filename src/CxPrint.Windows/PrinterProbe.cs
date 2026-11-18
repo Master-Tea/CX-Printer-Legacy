@@ -5,43 +5,41 @@ using CxPrint.Core;
 
 namespace CxPrint.Windows;
 
-// Run native driver queries in bounded child processes so an unresponsive driver cannot consume every scan slot.
+// Native drivers run in bounded child processes; waiting for them never occupies control-server threads.
 public static class PrinterProbe
 {
     public static PrinterScanner CreateScanner(string executable, Action<string, TimeSpan>? onRead = null) => new(
-        names: () => Read<string[]>(executable, "--list-printer-names", null, TimeSpan.FromSeconds(10)),
-        read: name => Read<PrinterInfo>(executable, "--read-printer", name, TimeSpan.FromSeconds(20)),
-        onRead: onRead);
+        onRead: onRead,
+        asyncNames: async () => await ReadAsync<string[]>(executable, "--list-printer-names", null, TimeSpan.FromSeconds(10)).ConfigureAwait(false),
+        asyncRead: name => ReadAsync<PrinterInfo>(executable, "--read-printer", name, TimeSpan.FromSeconds(20)));
 
-    private static T Read<T>(string executable, string command, string? name, TimeSpan timeout)
+    private static async Task<T> ReadAsync<T>(string executable, string command, string? name, TimeSpan timeout)
     {
         if (!File.Exists(executable)) throw new FileNotFoundException("缺少打印机读取程序，请完整解压安装包。", executable);
         var start = new ProcessStartInfo(executable)
         {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
             WorkingDirectory = Path.GetDirectoryName(executable)!
         };
         start.ArgumentList.Add(command);
         if (name is not null) start.ArgumentList.Add(name);
-        var started = Stopwatch.StartNew();
         using var process = Process.Start(start) ?? throw new IOException("无法启动打印机读取程序。");
+        using var deadline = new CancellationTokenSource(timeout);
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+        try
         {
-            process.Kill();
-            process.WaitForExit(1000);
+            await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+            await Task.WhenAll(output, error).WaitAsync(deadline.Token).ConfigureAwait(false);
+            if (process.ExitCode != 0) throw new IOException("打印机读取失败：" + error.Result.Trim());
+            return JsonSerializer.Deserialize<T>(output.Result, Product.Json) ?? throw new InvalidDataException("打印机读取结果为空。");
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited) process.Kill();
             throw new TimeoutException(name is null ? "读取 Windows 打印机列表超时，请检查 Print Spooler 服务。" : $"读取 {name} 的驱动超时，已跳过，可刷新重试。");
         }
-        // Do not let inherited pipe handles extend the driver deadline indefinitely.
-        var remaining = Math.Max(1, (int)(timeout - started.Elapsed).TotalMilliseconds);
-        if (!Task.WaitAll(new Task[] { output, error }, remaining)) throw new TimeoutException("打印机读取程序未及时关闭输出。");
-        if (process.ExitCode != 0) throw new IOException("打印机读取失败：" + error.Result.Trim());
-        return JsonSerializer.Deserialize<T>(output.Result, Product.Json) ?? throw new InvalidDataException("打印机读取结果为空。");
     }
 }

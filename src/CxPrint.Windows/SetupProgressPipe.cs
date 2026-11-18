@@ -9,7 +9,6 @@ namespace CxPrint.Windows;
 public sealed class SetupProgressListener : IDisposable
 {
     private const string Prefix="CxPrintBridge.Setup.";
-    private const PipeOptions FirstPipeInstance=(PipeOptions)0x00080000;
     private readonly NamedPipeServerStream _pipe;
     private SetupProgress? _latest;
     public string Name { get; }=Prefix+Guid.NewGuid().ToString("N");
@@ -20,8 +19,7 @@ public sealed class SetupProgressListener : IDisposable
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid,null),PipeAccessRights.FullControl,AccessControlType.Deny));
         foreach (var sid in new[]{WindowsIdentity.GetCurrent().User!,new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null),new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null)})
             security.AddAccessRule(new PipeAccessRule(sid,PipeAccessRights.FullControl,AccessControlType.Allow));
-        _pipe=NamedPipeServerStreamAcl.Create(Name,PipeDirection.In,1,PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous|FirstPipeInstance,4096,4096,security);
+        _pipe=LegacyPipeServer.Create(Name,PipeDirection.In,1,4096,4096,security);
     }
     public static bool IsValidName(string name)=>name.StartsWith(Prefix,StringComparison.Ordinal) && Guid.TryParseExact(name[Prefix.Length..],"N",out _);
     public async Task ListenAsync(IProgress<SetupProgress> progress,CancellationToken cancellation)

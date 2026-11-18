@@ -66,6 +66,8 @@ public static class ServiceSetup
                     var existing=JsonSerializer.Deserialize<BridgeSettings>(File.ReadAllText(Paths.Settings),Product.Json)
                         ?? throw new InvalidDataException("现有设置损坏，请先备份后检查。");
                     existing.Validate(); // Reinstallation keeps printer selections and authentication.
+                    if (options.Owner is not null && existing.OwnerSid!=owner.Value)
+                        File.WriteAllText(Paths.Settings,JsonSerializer.Serialize(existing with { OwnerSid=owner.Value },Product.Json));
                 }
                 SecureTree(destination,publicRead:true); SecureTree(Paths.Root,publicRead:false);
                 await Report(60,"正在注册 Windows 打印后台服务…");
@@ -130,7 +132,46 @@ public static class ServiceSetup
             await Task.Run(()=>service.WaitForStatus(ServiceControllerStatus.Stopped,TimeSpan.FromSeconds(30)));
         service.Refresh();
         if (service.Status==ServiceControllerStatus.Stopped) service.Start();
-        await Task.Run(()=>service.WaitForStatus(ServiceControllerStatus.Running,TimeSpan.FromSeconds(45)));
+        var started=Stopwatch.StartNew();
+        while (started.Elapsed<TimeSpan.FromSeconds(45))
+        {
+            service.Refresh();
+            if (service.Status==ServiceControllerStatus.Running) break;
+            if (service.Status==ServiceControllerStatus.Stopped) throw StartupFailure("后台服务启动后立即退出。");
+            await Task.Delay(250);
+        }
+        service.Refresh();
+        if (service.Status!=ServiceControllerStatus.Running) throw StartupFailure("等待后台服务启动超时。");
+        // SCM can report Running before hosted workers have successfully opened the control pipe.
+        Exception? lastError=null;
+        for (var attempt=0;attempt<5;attempt++)
+        {
+            service.Refresh();
+            if (service.Status==ServiceControllerStatus.Stopped) throw StartupFailure("后台服务启动后退出。");
+            using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            try
+            {
+                var reply=await ControlClient.SendToPipeAsync(Product.PipeName,new ControlRequest("status"),deadline.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(3));
+                if (reply.Success && reply.Status?.Running==true) return;
+                lastError=new InvalidOperationException(reply.Error ?? "后台服务未就绪。");
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { lastError=ex; }
+            await Task.Delay(300);
+        }
+        throw StartupFailure("服务已注册，但控制连接未就绪："+lastError?.Message);
+    }
+    private static InvalidOperationException StartupFailure(string message)
+    {
+        try
+        {
+            var log=Directory.EnumerateFiles(Paths.Logs,"*.log").Where(p=>Path.GetFileName(p)!="setup.log")
+                .OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+            if (log is not null) message+=Environment.NewLine+"最近的服务日志："+Environment.NewLine+
+                string.Join(Environment.NewLine,File.ReadLines(log).TakeLast(35));
+        }
+        catch { }
+        return new InvalidOperationException(message);
     }
     private static async Task Stop()
     {

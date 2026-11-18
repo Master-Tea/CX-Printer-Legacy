@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Debug','Release')][string]$Configuration='Release'
+    [ValidateSet('Debug','Release')][string]$Configuration='Release',
+    [string]$OutputDirectory
 )
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
@@ -9,7 +10,7 @@ if (!(Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio 2022 Build Tools 
 $installation=& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath
 if (!$installation) { throw 'MSBuild was not found. Install Visual Studio 2022 Build Tools.' }
 $msbuild=Join-Path $installation 'MSBuild\Current\Bin\MSBuild.exe'
-$out=Join-Path $repo 'artifacts\CX-Printer-win7-x64'
+$out=if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $repo 'artifacts\CX-Printer-win7-x64' }
 $bridge=Join-Path $out 'Bridge'
 New-Item -ItemType Directory -Path $bridge -Force | Out-Null
 
@@ -27,7 +28,7 @@ $testInfo.FileName=Join-Path $out 'CX Printer.exe'
 $testInfo.Arguments='--self-test'
 $testInfo.UseShellExecute=$false
 $testProcess=[System.Diagnostics.Process]::Start($testInfo)
-if (!$testProcess.WaitForExit(30000)) {
+if (!$testProcess.WaitForExit(90000)) {
     $testProcess.Kill()
     throw 'Published UI startup self-test timed out.'
 }
