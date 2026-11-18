@@ -19,6 +19,16 @@ internal static class Program
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            if (args.Contains("--diagnose-printers", StringComparer.OrdinalIgnoreCase))
+            {
+                var scanner = CxPrint.Windows.PrinterProbe.CreateScanner(Path.Combine(AppContext.BaseDirectory, "Bridge", "CxPrint.Service.exe"));
+                var scan = scanner.RefreshAsync();
+                var completed = scan.Wait(TimeSpan.FromSeconds(60));
+                var snapshot = scanner.Snapshot;
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "printer-diagnostics.json"),
+                    System.Text.Json.JsonSerializer.Serialize(snapshot, CxPrint.Core.Product.Json), Encoding.UTF8);
+                return completed && snapshot.Error is null ? 0 : 1;
+            }
             using var form = new MainForm();
             if (_selfTest)
             {
@@ -29,8 +39,9 @@ internal static class Program
                     form.Size = size;
                     form.PerformLayout();
                 }
+                RefreshRegression.Run();
                 File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "startup-self-test.txt"),
-                    "PASS: MainForm construction, native window handle, and resize layout." + Environment.NewLine, Encoding.UTF8);
+                    "PASS: MainForm construction, native window handle, resize layout; unavailable/silent service, blocked driver, partial PDF results." + Environment.NewLine, Encoding.UTF8);
                 return 0;
             }
             Application.Run(form);

@@ -11,7 +11,7 @@ namespace CxPrint.Service;
 
 public sealed class PrinterMonitor(ILogger<PrinterMonitor> logger,PrinterScanner? scanner=null,PrinterSupplyMonitor? supplies=null) : ServiceWorker
 {
-    private readonly PrinterScanner _scanner=scanner ?? new(onRead:(name,elapsed)=>
+    private readonly PrinterScanner _scanner=scanner ?? PrinterProbe.CreateScanner(Path.Combine(AppContext.BaseDirectory,"CxPrint.Service.exe"),onRead:(name,elapsed)=>
     {
         if (elapsed>TimeSpan.FromSeconds(5)) logger.LogWarning("打印机 {Printer} 的驱动与纸张读取耗时 {Seconds:F1} 秒。",name,elapsed.TotalSeconds);
     });

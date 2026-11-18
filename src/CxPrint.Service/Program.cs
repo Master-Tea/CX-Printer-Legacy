@@ -5,6 +5,22 @@ using CxPrint.Windows;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Hosting.WindowsServices;
 
+if ((args.Length == 1 && args[0] == "--list-printer-names") ||
+    (args.Length == 2 && args[0] == "--read-printer"))
+{
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
+    try
+    {
+        object result = args.Length == 1 ? PrinterCatalog.Names() : PrinterCatalog.Read(args[1]);
+        Console.WriteLine(JsonSerializer.Serialize(result, Product.Json));
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
 if (args.Length>0 && ServiceSetup.IsCommand(args[0])) return await ServiceSetup.RunAsync(args);
 if (args.Length==1 && args[0]=="--list-printers")
 {

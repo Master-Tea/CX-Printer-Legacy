@@ -16,7 +16,19 @@ internal sealed class MainForm : Form
         public string? DisplayName { get; set; } = displayName;
     }
 
-    private readonly PrinterScanner _scanner = new();
+    private readonly PrinterScanner _scanner;
+    private readonly Func<ControlRequest, CancellationToken, Task<ControlReply>> _send;
+    private readonly TimeSpan _statusTimeout;
+    private readonly System.Windows.Forms.Timer _scanTimer = new() { Interval = 500 };
+    private PrinterScanSnapshot? _displayedScan;
+    private bool _useLocalScan;
+    private bool _refreshInProgress;
+    private bool _installing;
+    private string? _connectionError;
+    private DateTimeOffset _nextStatusPoll;
+    internal string StatusText => _statusText.Text;
+    internal bool ServiceButtonEnabled => _service.Enabled;
+    internal int PrinterCount => _printers.Items.Count;
     private readonly ListView _printers = new();
     private readonly ComboBox _media = new();
     private readonly TextBox _displayName = new();
@@ -27,15 +39,27 @@ internal sealed class MainForm : Form
     private BridgeStatus? _bridge;
     private bool _updatingDetails;
 
-    public MainForm()
+    public MainForm(PrinterScanner? scanner = null,
+        Func<ControlRequest, CancellationToken, Task<ControlReply>>? send = null, TimeSpan? statusTimeout = null)
     {
+        _scanner = scanner ?? PrinterProbe.CreateScanner(Path.Combine(Application.StartupPath, "Bridge", "CxPrint.Service.exe"));
+        _send = send ?? ControlClient.SendAsync;
+        _statusTimeout = statusTimeout ?? TimeSpan.FromSeconds(4);
         Text = "CX Printer Legacy";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         MinimumSize = new Size(720, 470);
         StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(900, 590);
         BuildLayout();
-        Shown += async (_, _) => await RefreshPrintersAsync();
+        Shown += async (_, _) => { _scanTimer.Start(); await RefreshPrintersAsync(); };
+        _scanTimer.Tick += async (_, _) =>
+        {
+            if (_refreshInProgress || _installing) return;
+            UpdateLocalScan();
+            if (_bridge?.PrintersRefreshing == true && DateTimeOffset.UtcNow >= _nextStatusPoll)
+                await RefreshPrintersAsync(false);
+        };
+        FormClosed += (_, _) => _scanTimer.Stop();
         _refresh.Click += async (_, _) => await RefreshPrintersAsync();
         _service.Click += async (_, _) => await InstallServiceAsync();
         _save.Click += async (_, _) => await SaveSettingsAsync();
@@ -109,35 +133,76 @@ internal sealed class MainForm : Form
         Controls.Add(strip);
     }
 
-    private async Task RefreshPrintersAsync()
+    internal async Task RefreshPrintersAsync(bool startScan = true)
     {
-        SetBusy(true);
-        _statusText.Text = "正在连接打印服务…";
+        if (_refreshInProgress || IsDisposed) return;
+        _refreshInProgress = true;
+        _refresh.Enabled = false;
+        _save.Enabled = false;
+        _statusText.Text = "正在连接打印服务（最多 4 秒）…";
         try
         {
+            using var timeout = new CancellationTokenSource(_statusTimeout);
             try
             {
-                var reply = await ControlClient.SendAsync(new ControlRequest("status"));
+                // Bound the wait even if a pipe operation ignores cancellation on an older OS.
+                var reply = await _send(new ControlRequest("status"), timeout.Token).WaitAsync(_statusTimeout);
                 _bridge = reply.Success ? reply.Status : null;
+                _connectionError = reply.Success ? null : reply.Error;
             }
-            catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException or InvalidOperationException)
+            catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 _bridge = null;
+                _connectionError = ex is TimeoutException or OperationCanceledException ? "连接超时" : ex.Message;
             }
-
-            if (_bridge is null || (_bridge.PrintersRefreshing && _bridge.Printers.Count == 0))
-                await _scanner.RefreshAsync();
-
+            if (IsDisposed) return;
+            _useLocalScan = _bridge is null || (_bridge.PrintersRefreshing && _bridge.Printers.Count == 0);
+            if (_useLocalScan && startScan)
+            {
+                // Native printer drivers may never return. Do not await the whole scan on the UI.
+                _ = _scanner.RefreshAsync();
+                _displayedScan = null;
+            }
             PopulatePrinters();
-            _statusText.Text = _bridge is null
-                ? "后台服务未连接。可先选择打印机，再安装或修复服务。"
-                : $"后台服务运行中 · IPP 端口 {_bridge.Port} · {_bridge.Printers.Count} 台打印机";
+            UpdateStatus();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            _statusText.Text = ex.Message;
+            if (!IsDisposed) _statusText.Text = ex.Message;
         }
-        finally { SetBusy(false); }
+        finally
+        {
+            _refreshInProgress = false;
+            _nextStatusPoll = DateTimeOffset.UtcNow.AddSeconds(3);
+            if (!IsDisposed) SetBusy(_installing);
+        }
+    }
+
+    internal void UpdateLocalScan()
+    {
+        if (!_useLocalScan || IsDisposed) return;
+        var snapshot = _scanner.Snapshot;
+        if (!ReferenceEquals(snapshot, _displayedScan))
+        {
+            PopulatePrinters();
+            _displayedScan = snapshot;
+        }
+        UpdateStatus();
+    }
+
+    private void UpdateStatus()
+    {
+        var connection = _bridge is null
+            ? "后台服务未连接" + (string.IsNullOrWhiteSpace(_connectionError) ? "" : $"（{_connectionError}）") + "；可点击安装 / 修复后台服务。"
+            : $"后台服务运行中 · IPP 端口 {_bridge.Port}。";
+        var scanMessage = _useLocalScan ? _scanner.Snapshot.Message : _bridge?.PrinterScanStatus;
+        _statusText.Text = connection + " " + (scanMessage ?? $"已读取 {_printers.Items.Count} 台打印机。");
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _scanTimer.Dispose();
+        base.Dispose(disposing);
     }
 
     private void PopulatePrinters()
@@ -146,8 +211,11 @@ internal sealed class MainForm : Form
             .Select(item => item.Tag as PrinterRow)
             .Where(row => row is not null)
             .ToDictionary(row => row!.Printer.Id, row => row!);
+        var checkedIds = _printers.Items.Cast<ListViewItem>().Where(item => item.Checked)
+            .Select(item => ((PrinterRow)item.Tag!).Printer.Id).ToHashSet();
+        var selectedId = SelectedRow()?.Printer.Id;
         var saved = _bridge?.SharedPrinters.ToDictionary(printer => printer.Id);
-        var printers = _bridge?.Printers ?? _scanner.Snapshot.Printers;
+        var printers = _useLocalScan ? _scanner.Snapshot.Printers : _bridge?.Printers ?? _scanner.Snapshot.Printers;
 
         _printers.BeginUpdate();
         _printers.Items.Clear();
@@ -160,6 +228,7 @@ internal sealed class MainForm : Form
             {
                 media = old.Media ?? media;
                 displayName = old.DisplayName;
+                shared = checkedIds.Contains(printer.Id);
             }
             else if (saved is not null && saved.TryGetValue(printer.Id, out var existing))
             {
@@ -172,9 +241,10 @@ internal sealed class MainForm : Form
             item.SubItems.Add(printer.Summary);
             item.SubItems.Add(SelectedMediaName(row));
             _printers.Items.Add(item);
+            if (printer.Id == selectedId) item.Selected = true;
         }
         _printers.EndUpdate();
-        if (_printers.Items.Count > 0) _printers.Items[0].Selected = true;
+        if (_printers.Items.Count > 0 && _printers.SelectedItems.Count == 0) _printers.Items[0].Selected = true;
         else ShowSelection();
     }
 
@@ -243,7 +313,8 @@ internal sealed class MainForm : Form
         try
         {
             var settings = new ApplySettings(shared, _bridge.AuthenticationEnabled, _bridge.Username, Enabled: true);
-            var reply = await ControlClient.SendAsync(new ControlRequest("apply", settings));
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var reply = await _send(new ControlRequest("apply", settings), timeout.Token).WaitAsync(TimeSpan.FromSeconds(20));
             if (!reply.Success) throw new InvalidOperationException(reply.Error ?? "保存失败。");
             _bridge = reply.Status ?? _bridge;
             PopulatePrinters();
@@ -264,6 +335,7 @@ internal sealed class MainForm : Form
             MessageBox.Show(this, "缺少 Bridge\\CxPrint.Service.exe。请重新解压完整安装包。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
+        _installing = true;
         SetBusy(true);
         try
         {
@@ -290,13 +362,13 @@ internal sealed class MainForm : Form
         {
             MessageBox.Show(this, ex.Message, "后台服务安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        finally { SetBusy(false); }
+        finally { _installing = false; SetBusy(false); }
     }
 
     private void SetBusy(bool busy)
     {
-        _refresh.Enabled = !busy;
+        _refresh.Enabled = !busy && !_refreshInProgress;
         _service.Enabled = !busy;
-        _save.Enabled = !busy;
+        _save.Enabled = !busy && !_refreshInProgress && _bridge is not null;
     }
 }
